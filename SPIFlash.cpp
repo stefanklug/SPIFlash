@@ -31,6 +31,9 @@
 #define SPIFLASH_SLEEP            0xB9        // deep power down
 #define SPIFLASH_WAKE             0xAB        // deep power wake up
 #define SPIFLASH_BYTEPAGEPROGRAM  0x02        // write (1 to 256bytes)
+
+#define SPIFLASH_AAI_PROGRAM	  0xAD		  // write in pairs of two bytes. needed by SST25V...
+
 #define SPIFLASH_IDREAD           0x9F        // read JEDEC manufacturer and device ID (2 bytes, specific bytes for each manufacturer and device)
                                               // Example for Atmel-Adesto 4Mbit AT25DF041A: 0x1F44 (page 27: http://www.adestotech.com/sites/default/files/datasheets/doc3668.pdf)
                                               // Example for Winbond 4Mbit W25X40CL: 0xEF30 (page 14: http://www.winbond.com/NR/rdonlyres/6E25084C-0BFE-4B25-903D-AE10221A0929/0/W25X40CL.pdf)
@@ -50,7 +53,7 @@ byte SPIFlash::UNIQUEID[8];
 /// Example for Winbond 4Mbit W25X40CL: 0xEF30 (page 14: http://www.winbond.com/NR/rdonlyres/6E25084C-0BFE-4B25-903D-AE10221A0929/0/W25X40CL.pdf)
 SPIFlash::SPIFlash(uint8_t slaveSelectPin, uint16_t jedecID) {
   _slaveSelectPin = slaveSelectPin;
-  _jedecID = jedecID;
+  _wantedJedecID = jedecID;
 }
 
 /// Select the flash chip
@@ -75,7 +78,9 @@ boolean SPIFlash::initialize()
   SPI.setClockDivider(SPI_CLOCK_DIV2); //max speed, except on Due which can run at system clock speed
   SPI.begin();
 
-  if (_jedecID == 0 || readDeviceId() == _jedecID) {
+  _deviceJedecID = readDeviceId();
+
+  if (_wantedJedecID == 0 || _deviceJedecID == _wantedJedecID) {
     command(SPIFLASH_STATUSWRITE, true); // Write Status Register
     SPI.transfer(0);                     // Global Unprotect
     unselect();
@@ -85,15 +90,10 @@ boolean SPIFlash::initialize()
 }
 
 /// Get the manufacturer and device ID bytes (as a short word)
-word SPIFlash::readDeviceId()
+uint16_t SPIFlash::readDeviceId()
 {
-#if defined(__AVR_ATmega32U4__) // Arduino Leonardo, MoteinoLeo
   command(SPIFLASH_IDREAD); // Read JEDEC ID
-#else
-  select();
-  SPI.transfer(SPIFLASH_IDREAD);
-#endif
-  word jedecid = SPI.transfer(0) << 8;
+  uint16_t jedecid = SPI.transfer(0) << 8;
   jedecid |= SPI.transfer(0);
   unselect();
   return jedecid;
@@ -199,14 +199,58 @@ void SPIFlash::writeByte(long addr, uint8_t byt) {
 /// WARNING: if you write beyond a page boundary (or more than 256bytes),
 ///          the bytes will wrap around and start overwriting at the beginning of that same page
 ///          see datasheet for more details
-void SPIFlash::writeBytes(long addr, const void* buf, uint8_t len) {
-  command(SPIFLASH_BYTEPAGEPROGRAM, true);  // Byte/Page Program
-  SPI.transfer(addr >> 16);
-  SPI.transfer(addr >> 8);
-  SPI.transfer(addr);
-  for (uint8_t i = 0; i < len; i++)
-    SPI.transfer(((byte*) buf)[i]);
-  unselect();
+void SPIFlash::writeBytes(long addr, const void* buf, int len) {
+	//check for microchip SST25V...
+  if(_deviceJedecID == 0xBF25) {
+	byte* bytes = (byte*)buf;
+  	//the SST25V must be written as double bytes
+	//if the write starts at an uneven address, we need to split
+	if(addr & 1) {
+	  writeByte(addr, bytes[0]);
+	  bytes++;
+	  addr++;
+	  len--;
+	}
+
+	bool needAddress = true;
+
+	//write byte pairs
+	while(len >= 2) {
+		if(needAddress) {
+			command(SPIFLASH_AAI_PROGRAM, true);
+			SPI.transfer(addr >> 16);
+			SPI.transfer(addr >> 8);
+			SPI.transfer(addr);
+			needAddress = false;
+		} else {
+			SPI.transfer(SPIFLASH_AAI_PROGRAM);
+		}
+		SPI.transfer(bytes[0]);
+		SPI.transfer(bytes[1]);
+		addr += 2;
+		bytes += 2;
+		len -= 2;
+		//wait for finish
+		while(busy()){}
+	}
+	SPI.transfer(SPIFLASH_WRITEDISABLE);
+	while(busy()){}
+	unselect();
+
+	//write possible last byte
+	if(len > 0) {
+		writeByte(addr, bytes[0]);
+	}
+
+  } else {
+    command(SPIFLASH_BYTEPAGEPROGRAM, true);  // Byte/Page Program
+    SPI.transfer(addr >> 16);
+    SPI.transfer(addr >> 8);
+    SPI.transfer(addr);
+    for (uint8_t i = 0; i < len; i++)
+      SPI.transfer(((byte*) buf)[i]);
+    unselect();
+  }
 }
 
 /// erase entire flash memory array

@@ -55,12 +55,12 @@ public:
   byte readByte(long addr);
   void readBytes(long addr, void* buf, word len);
   void writeByte(long addr, byte byt);
-  void writeBytes(long addr, const void* buf, byte len);
+  void writeBytes(long addr, const void* buf, int len);
   boolean busy();
   void chipErase();
   void blockErase4K(long address);
   void blockErase32K(long address);
-  word readDeviceId();
+  uint16_t readDeviceId();
   byte* readUniqueId();
   
   void sleep();
@@ -70,7 +70,8 @@ protected:
   void select();
   void unselect();
   byte _slaveSelectPin;
-  uint16_t _jedecID;
+  uint16_t _wantedJedecID;
+  uint16_t _deviceJedecID;
 };
 
 #endif
