@@ -3,6 +3,15 @@
 
 #include <stdint.h>
 
+#pragma pack(push)
+#pragma pack(1)
+
+struct dummyblock_t{
+	unsigned char data[4096];
+};
+
+#pragma pack(pop)
+
 class DummyFlash {
 public:
 	DummyFlash(int blockCount);
@@ -17,7 +26,7 @@ public:
 
 	void printWearLevel();
   protected:
-	uint8_t* data;
+	struct dummyblock_t* data;
 	int blockCount;
 	int* eraseCounter;
 };

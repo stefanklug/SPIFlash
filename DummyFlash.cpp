@@ -11,9 +11,11 @@
 #define MAX_ADDR (blockCount * 4096)
 
 DummyFlash::DummyFlash(int _blockCount):blockCount(_blockCount) {
-	data = (uint8_t*)malloc(blockCount * 4096);
+	printf("size: %i\n", (int)sizeof(struct dummyblock_t));
+	assert(sizeof(struct dummyblock_t) == 4096);
+	data = (struct dummyblock_t*)malloc(blockCount * sizeof(struct dummyblock_t));
 	assert(data);
-	eraseCounter = (int*)malloc(blockCount*sizeof(int));
+	eraseCounter = (int*)calloc(blockCount, sizeof(int));
 }
 
 DummyFlash::~DummyFlash() {
@@ -23,18 +25,18 @@ DummyFlash::~DummyFlash() {
 
 uint8_t DummyFlash::readByte(long addr) {
 	assert(addr < MAX_ADDR);
-	return data[addr];
+	return ((uint8_t*)data)[addr];
 }
 
 void DummyFlash::readBytes(long addr, void* buf, long len) {
 	assert(addr + len <= MAX_ADDR);
-	memcpy(buf, data+addr, len);
+	memcpy(buf, ((uint8_t*)data)+addr, len);
 }
 void DummyFlash::writeByte(long addr, uint8_t byt) {
 	assert(addr < MAX_ADDR);
 	//only change ones to zeros, zerosuint8_tt stay
-	uint8_t old = data[addr];
-	data[addr] = byt & ~old;
+	uint8_t old = ((uint8_t*)data)[addr];
+	((uint8_t*)data)[addr] = byt & old;
 }
 
 void DummyFlash::writeBytes(long addr, const void* buf, int len) {
@@ -54,7 +56,8 @@ void DummyFlash::chipErase() {
 
 void DummyFlash::blockErase4K(long address) {
 	long block = address/4096;
-	memset(data + block*4096, 0xff, 4096);
+	memset(((uint8_t*)data) + block*4096, 0xff, 4096);
+	eraseCounter[block]++;
 }
 
 void DummyFlash::printWearLevel() {
