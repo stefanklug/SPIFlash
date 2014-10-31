@@ -39,6 +39,8 @@
                                               // Example for Winbond 4Mbit W25X40CL: 0xEF30 (page 14: http://www.winbond.com/NR/rdonlyres/6E25084C-0BFE-4B25-903D-AE10221A0929/0/W25X40CL.pdf)
 #define SPIFLASH_MACREAD          0x4B        // read unique ID number (MAC)
 
+//#define DBG()
+//#define DBG()
 
 byte SPIFlash::UNIQUEID[8];
 
@@ -78,7 +80,24 @@ boolean SPIFlash::initialize()
   SPI.setClockDivider(SPI_CLOCK_DIV2); //max speed, except on Due which can run at system clock speed
   SPI.begin();
 
+  byte status=readStatus();
+  if(status & 0x02) {
+	  Serial.println("device initialized in WREN mode. resetting...");
+	  select();
+	  SPI.transfer(SPIFLASH_WRITEDISABLE);
+	  unselect();
+	  while(busy()){}
+  }
+
+  int i = 10;
+  while(i-- > 0) {
   _deviceJedecID = readDeviceId();
+  Serial.printf("Flash device id: %i %i\r\n", _deviceJedecID, _wantedJedecID);
+  if(_deviceJedecID != 0) i=0;
+  delay(100);
+  }
+  if(_deviceJedecID == 0) exit(1);
+
 
   if (_wantedJedecID == 0 || _deviceJedecID == _wantedJedecID) {
     command(SPIFLASH_STATUSWRITE, true); // Write Status Register
@@ -147,12 +166,14 @@ void SPIFlash::command(byte cmd, boolean isWrite){
   DDRB |= B00000001;            // Make sure the SS pin (PB0 - used by RFM12B on MoteinoLeo R1) is set as output HIGH!
   PORTB |= B00000001;
 #endif
+  while(busy()); //wait for any write/erase to complete
+
   if (isWrite)
   {
     command(SPIFLASH_WRITEENABLE); // Write Enable
     unselect();
   }
-  while(busy()); //wait for any write/erase to complete
+
   select();
   SPI.transfer(cmd);
 }
@@ -177,6 +198,7 @@ byte SPIFlash::readStatus()
   SPI.transfer(SPIFLASH_STATUSREAD);
   byte status = SPI.transfer(0);
   unselect();
+  //Serial.printf("Status: 0x%hhx\r\n", status);
   return status;
 }
 
@@ -190,6 +212,7 @@ void SPIFlash::writeByte(long addr, uint8_t byt) {
   SPI.transfer(addr >> 8);
   SPI.transfer(addr);
   SPI.transfer(byt);
+  while(busy()){}
   unselect();
 }
 
@@ -206,6 +229,7 @@ void SPIFlash::writeBytes(long addr, const void* buf, int len) {
   	//the SST25V must be written as double bytes
 	//if the write starts at an uneven address, we need to split
 	if(addr & 1) {
+	  //Serial.println("AAI write uneven start");
 	  writeByte(addr, bytes[0]);
 	  bytes++;
 	  addr++;
@@ -217,12 +241,15 @@ void SPIFlash::writeBytes(long addr, const void* buf, int len) {
 	//write byte pairs
 	while(len >= 2) {
 		if(needAddress) {
+			//Serial.println("Start AAI");
 			command(SPIFLASH_AAI_PROGRAM, true);
 			SPI.transfer(addr >> 16);
 			SPI.transfer(addr >> 8);
 			SPI.transfer(addr);
 			needAddress = false;
 		} else {
+			//Serial.println("Continue AAI");
+			select();
 			SPI.transfer(SPIFLASH_AAI_PROGRAM);
 		}
 		SPI.transfer(bytes[0]);
@@ -230,15 +257,20 @@ void SPIFlash::writeBytes(long addr, const void* buf, int len) {
 		addr += 2;
 		bytes += 2;
 		len -= 2;
+		unselect();
 		//wait for finish
 		while(busy()){}
 	}
+
+	//Serial.println("End AAI");
+	select();
 	SPI.transfer(SPIFLASH_WRITEDISABLE);
 	while(busy()){}
 	unselect();
 
 	//write possible last byte
 	if(len > 0) {
+		//Serial.println("Write AAI trailing byte");
 		writeByte(addr, bytes[0]);
 	}
 
