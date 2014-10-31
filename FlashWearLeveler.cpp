@@ -3,7 +3,10 @@
 #include <string.h>
 #include <stdlib.h>
 #include <assert.h>
+
+#ifdef ARDUINO
 #include <Arduino.h>
+#endif
 
 #define BLOCK_NOT_DELETED_BIT (1<<15)
 
@@ -34,8 +37,14 @@ struct addr_info_ {
 
 const uint16_t ErasedHeader = 0xffff;
 
-#define FWL_ERR(...) Serial.printf(__VA_ARGS__); Serial.println("");
-//#define FWL_ERR(...) printf(__VA_ARGS__); printf("\n");
+#ifdef ARDUINO
+#define FWL_ERR(...) Serial.printf(__VA_ARGS__); Serial.println(""); Serial.flush();
+//#define FWL_DBG(...) Serial.printf(__VA_ARGS__); Serial.println("");
+#define FWL_DBG(...)
+#else
+#define FWL_ERR(...) printf(__VA_ARGS__); printf("\n");
+#define FWL_DBG(...) printf(__VA_ARGS__); printf("\n"); delay(10);
+#endif
 
 static addr_info SplitVirtualAddress(long addr) {
 	addr_info res;
@@ -68,25 +77,20 @@ static long CombinePhysicalAddress(addr_info info) {
 
 
 
-FlashWearLevelerBase::FlashWearLevelerBase(uint16_t noOf4kBlocks): blockCount(noOf4kBlocks) {
-	blockMap = (uint16_t*)malloc(noOf4kBlocks * sizeof(uint16_t));
-	if(!blockMap) FWL_ERR("failed to allocate map");
+FlashWearLevelerBase::FlashWearLevelerBase(uint16_t noOf4kBlocks, uint16_t* blockMapMem, uint16_t* blockHeaderCacheMem):
+		blockCount(noOf4kBlocks), blockMap(blockMapMem), blockHeaderCache(blockHeaderCacheMem)
+{
 	assert(blockMap != 0);
-	blockHeaderCache = (uint16_t*)malloc(noOf4kBlocks * sizeof(uint16_t));
-	if(!blockHeaderCache) FWL_ERR("failed to allocate map");
 	assert(blockHeaderCache != 0);
 }
 
 
 FlashWearLevelerBase::~FlashWearLevelerBase() {
-	free(blockMap);
-	blockMap = 0;
-	free(blockHeaderCache);
-	blockHeaderCache = 0;
 }
 
 
 bool FlashWearLevelerBase::initialize() {
+	FWL_DBG("WearLeveler start init...");
 	//if(!flashinitialize()) return false;
 	activeBlockDirty = false;
 
@@ -108,12 +112,12 @@ bool FlashWearLevelerBase::initialize() {
 			}
 
 			if(BLOCK_DELETED(virtualBlockId)) {
-				FWL_ERR("Found deleted block. Deleting...");
+				FWL_ERR("Found deleted block (0x%x). Deleting...", virtualBlockId);
 				//flashblockErase4K(i*4096);
 				continue;
 			}
 
-			//mark as NOT deleted by setting the deleted bit
+			//mark as NOT deleted by setting the not deleted bit
 			blockMap[BLOCK_ID(virtualBlockId)] = (i | BLOCK_NOT_DELETED_BIT);
 		}
 	}
@@ -148,18 +152,26 @@ bool FlashWearLevelerBase::initialize() {
 			lastFreePhysicalBlock++;
 		}
 	}
+
+	FWL_DBG("WearLeveler initialized...");
 	printCaches();
 	return true;
 }
 
 bool FlashWearLevelerBase::format() {
 	flashChipErase();
+
+	/*FWL_DBG("read %i", (int)flashReadByte(10));
+	FWL_DBG("read %i", (int)flashReadByte(100));
+	FWL_DBG("read %i", (int)flashReadByte(1000));
+	FWL_DBG("read %i", (int)flashReadByte(5000));
+*/
 	return initialize();
 }
 
 void FlashWearLevelerBase::printCaches() {
 	//return;
-#if 1
+#if 0
 	int i;
 	Serial.printf("V->P ");
 	for(i=0; i<blockCount; i++) {
@@ -176,27 +188,43 @@ void FlashWearLevelerBase::printCaches() {
 
 
 uint8_t FlashWearLevelerBase::readByte(long addr) {
+	FWL_DBG("Read byte %x", addr);
+
+	addr_info info = SplitVirtualAddress(addr);
 	uint16_t h = getActiveBlockHeader();
 	if(!BLOCK_IS_FREE(h)) {
 		//active block is valid, see, if we need to read from there
 
 		//check if the addr lies in the activeBlock
-		addr_info i = SplitVirtualAddress(addr);
-		if(i.block == BLOCK_ID(h)) {
+		if(info.block >= blockCount) {
+			FWL_ERR("Illegal block address %i", info.block);
+		}
+		if(info.block == BLOCK_ID(h)) {
 			//add the header
-			return activeBlock[i.offset+2];
+			return activeBlock[info.offset+2];
 		}
 	}
 
 	//just forward
-	return flashReadByte(addr);
+	addr_info physicalInfo;
+	physicalInfo.block = BLOCK_ID(blockMap[info.block]);
+	physicalInfo.offset = info.offset;
+	long a = CombinePhysicalAddress(physicalInfo);
+	return flashReadByte(a);
 }
 
 
 int FlashWearLevelerBase::readBytes(long addr, void* buf, long len) {
+	FWL_DBG("Read bytes %x %i", addr, len);
+
 	//iterate over the blocks
 	addr_info start = SplitVirtualAddress(addr);
 	addr_info end = SplitVirtualAddress(addr + len);
+
+	if(end.block >= blockCount) {
+		FWL_ERR("Illegal block address %i", end.block);
+	}
+
 	int status = 0;
 
 	int pos = 0;
@@ -223,7 +251,8 @@ int FlashWearLevelerBase::readBytes(long addr, void* buf, long len) {
 
 
 int FlashWearLevelerBase::readBytesFromVBlock(const addr_info& virtualStartInfo, void* buf, long len) {
-	assert(virtualStartInfo.offset + len < VIRTUAL_BLOCK_SIZE);
+	FWL_DBG("Read bytes vblock %i %i", virtualStartInfo.offset + len, VIRTUAL_BLOCK_SIZE);
+	assert(virtualStartInfo.offset + len <= VIRTUAL_BLOCK_SIZE);
 	int status = 0;
 	uint16_t h = getActiveBlockHeader();
 	//see if we need to copy from the active Block
@@ -233,7 +262,9 @@ int FlashWearLevelerBase::readBytesFromVBlock(const addr_info& virtualStartInfo,
 		addr_info physicalInfo;
 		physicalInfo.block = BLOCK_ID(blockMap[virtualStartInfo.block]);
 		physicalInfo.offset = virtualStartInfo.offset;
-		status = flashReadBytes(CombinePhysicalAddress(physicalInfo), buf, len);
+		long a = CombinePhysicalAddress(physicalInfo);
+		FWL_DBG("read On Flash %i %i", a, len);
+		status = flashReadBytes(a, buf, len);
 	}
 	return status;
 }
@@ -241,7 +272,12 @@ int FlashWearLevelerBase::readBytesFromVBlock(const addr_info& virtualStartInfo,
 
 int FlashWearLevelerBase::writeByte(long addr, uint8_t byt) {
 	addr_info virtualInfo = SplitVirtualAddress(addr);
+	if(virtualInfo.block >= blockCount) {
+		FWL_ERR("Illegal block address %i", virtualInfo.block);
+	}
 	activateVirtualBlock(virtualInfo.block);
+
+	FWL_DBG("Write byte %i", addr);
 
 	activeBlock[virtualInfo.offset + 2] = byt;
 	activeBlockDirty = true;
@@ -253,6 +289,10 @@ int FlashWearLevelerBase::writeByte(long addr, uint8_t byt) {
 int FlashWearLevelerBase::writeBytes(long addr, const void* buf, int len) {
 	addr_info start = SplitVirtualAddress(addr);
 	addr_info end = SplitVirtualAddress(addr + len);
+	if(end.block >= blockCount) {
+		FWL_ERR("Illegal block address %i", end.block);
+	}
+	FWL_DBG("Write bytes");
 
 	while(start != end) {
 		activateVirtualBlock(start.block);
@@ -280,6 +320,7 @@ void FlashWearLevelerBase::activateVirtualBlock(uint16_t virtualBlockHeader) {
 	if(BLOCK_ID(virtualBlockHeader) != BLOCK_ID(header)) {
 		flush();
 		uint16_t physicalBlockHeader = blockMap[BLOCK_ID(virtualBlockHeader)];
+		FWL_ERR("Activate Physical Block %i", BLOCK_ID(physicalBlockHeader));
 		flashReadBytes(BLOCK_ID(physicalBlockHeader)*PHYSICAL_BLOCK_SIZE, activeBlock, 4096);
 		//it might be that we load a erased flash page, were the header would be 0xffff. Lets correct that and mark the block as unfree
 		header = blockHeaderCache[BLOCK_ID(physicalBlockHeader)] | BLOCK_NOT_DELETED_BIT;
@@ -303,6 +344,7 @@ uint16_t FlashWearLevelerBase::getActiveBlockHeader() {
 
 
 bool FlashWearLevelerBase::flushNeeded() {
+	FWL_DBG("Flush Needed %i", activeBlockDirty);
 	return activeBlockDirty;
 }
 
@@ -314,7 +356,7 @@ void FlashWearLevelerBase::flush() {
 
 	//physicalBlock contains a block header pointing to the current physical Block in use
 	uint16_t currentPhysicalBlock = blockMap[BLOCK_ID(header)];
-
+	FWL_DBG("Flush Physical Block %i", BLOCK_ID(currentPhysicalBlock));
 	uint16_t nextPhysicalBlock;
 
 	//if the block is free (first write to this virtual block) use it directly
@@ -355,6 +397,8 @@ void FlashWearLevelerBase::flush() {
 	long addr;
 	addr = BLOCK_ID(nextPhysicalBlock)*PHYSICAL_BLOCK_SIZE;
 	//write the activeBlock to flash
+	FWL_DBG("write phys %i %i", addr, PHYSICAL_BLOCK_SIZE);
+	//flashBlockErase4K(addr);
 	flashWriteBytes(addr, activeBlock, PHYSICAL_BLOCK_SIZE);
 	blockHeaderCache[BLOCK_ID(nextPhysicalBlock)] = header | BLOCK_NOT_DELETED_BIT;
 	blockMap[BLOCK_ID(header)] = nextPhysicalBlock | BLOCK_NOT_DELETED_BIT;
@@ -364,11 +408,13 @@ void FlashWearLevelerBase::flush() {
 	if(BLOCK_ID(currentPhysicalBlock) != BLOCK_ID(nextPhysicalBlock)) {
 		currentPhysicalBlock = currentPhysicalBlock & ~BLOCK_NOT_DELETED_BIT;
 		addr = BLOCK_ID(currentPhysicalBlock)*PHYSICAL_BLOCK_SIZE;
+		//TODO ensure that this works...(writing zeros to an already written byte
 		flashWriteBytes(addr, &currentPhysicalBlock, sizeof(currentPhysicalBlock));
 		//the current block must point to the virtual block, where we took the next block from
 		blockHeaderCache[BLOCK_ID(currentPhysicalBlock)] = usedVirtualBlock;
 		blockMap[BLOCK_ID(usedVirtualBlock)] = currentPhysicalBlock;
 		//erase the current physicalBlock
+		//TODO either erase here, or before writing
 		flashBlockErase4K(addr);
 	}
 

@@ -5,7 +5,7 @@
 #include <string.h>
 
 DummyFlash flash(8);
-FlashWearLeveler<DummyFlash> leveler(flash, 8);
+FlashWearLeveler<DummyFlash, 8> leveler(flash);
 
 const char* t1="Hallo Welt";
 const char* t2="The quick brown fox jumps over the lazy dog!";

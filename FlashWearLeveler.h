@@ -2,12 +2,16 @@
 #define _FLASHWEARLEVELER_H_
 
 #include <inttypes.h>
+#ifdef ARDUINO
+#include <Arduino.h>
+#endif
 
 typedef struct addr_info_ addr_info;
 
 class FlashWearLevelerBase {
 public:
-	FlashWearLevelerBase(uint16_t noOf4kBlocks);
+	//the pointers are passed in, to be able to statically allocate them inside the templated FlashWearLeveler
+	FlashWearLevelerBase(uint16_t noOf4kBlocks, uint16_t* blockMapMem, uint16_t* blockHeaderCacheMem);
 	virtual ~FlashWearLevelerBase();
 	bool initialize();
 	bool format();
@@ -48,19 +52,34 @@ protected:
 	uint16_t* blockHeaderCache;
 };
 
-template<typename Flash>
+template<typename Flash, int noOf4kBlocks>
 class FlashWearLeveler: public FlashWearLevelerBase {
 public:
-	 FlashWearLeveler(Flash& _flash, uint16_t noOf4kBlocks):FlashWearLevelerBase(noOf4kBlocks), flash(_flash) {}
+	 FlashWearLeveler(Flash& _flash):FlashWearLevelerBase(noOf4kBlocks, bM, bMC), flash(_flash) {}
 protected:
 	virtual uint8_t flashReadByte(long addr) { return flash.readByte(addr); }
 	virtual int flashReadBytes(long addr, void* buf, long len) { flash.readBytes(addr, buf, len); return 0; }
 	virtual int flashWriteByte(long addr, uint8_t byt) { flash.writeByte(addr, byt); return 0; }
 	virtual int flashWriteBytes(long addr, const void* buf, int len){ flash.writeBytes(addr, buf, len); return 0; }
-	virtual int flashChipErase() { flash.chipErase(); return 0; }
-	virtual int flashBlockErase4K(long address) { flash.blockErase4K(address); return 0; }
+	virtual int flashChipErase() {
+		Serial.println("Erase");
+		flash.chipErase();
+		while(flash.busy()) {
+			Serial.println("Wait for erase");
+		}
+		return 0;
+	}
+	virtual int flashBlockErase4K(long address) {
+		flash.blockErase4K(address); return 0;
+		while(flash.busy()) {
+			Serial.println("Wait for block erase");
+		}
+		return 0;
+	}
 
 	Flash& flash;
+	uint16_t bM[noOf4kBlocks];
+	uint16_t bMC[noOf4kBlocks];
 };
 
 #endif
